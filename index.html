@@ -109,7 +109,20 @@ function draw_board(){
   if(game_over){ ctx.fillStyle="#FFF"; ctx.fillText("Game Over - qでリセット",10,BOARD_Y+HEIGHT*CELL_H+20); }
 }
 
-// 重力・マージ（簡略化: 前回の完全移植と同じロジックを使用）
+// 落下アニメーション
+async function animate_fall(col,value){
+  let y=0;
+  while(y+1<HEIGHT && grid[y+1][col]===0){
+    draw_board();
+    draw_block(PREVIEW_Y+y*CELL_H,col*CELL_W,value,true,true);
+    await new Promise(r=>setTimeout(r,80));
+    y++;
+  }
+  grid[y][col]=value;
+  return y;
+}
+
+// 重力・マージ
 function apply_gravity(){
   let moved=false;
   for(let x=0;x<WIDTH;x++){
@@ -133,8 +146,24 @@ function find_cross_merges(){
   }
   return merges;
 }
+// 結合アニメーション
+async function animate_merge(merges){
+  for(let b=0;b<2;b++){
+    draw_board();
+    for(const m of merges){
+      draw_block(BOARD_Y+m.cy*CELL_H,m.cx*CELL_W,m.value,true,true);
+      for(const n of m.neigh){
+        draw_block(BOARD_Y+n.y*CELL_H,n.x*CELL_W,grid[n.y][n.x],true,true);
+      }
+    }
+    await new Promise(r=>setTimeout(r,120));
+    draw_board();
+    await new Promise(r=>setTimeout(r,120));
+  }
+}
 async function resolve_cross(){
   const merges=find_cross_merges(); if(merges.length===0) return 0;
+  await animate_merge(merges);
   let gained=0;
   for(const m of merges){
     const v=m.value, neighs=m.neigh.length, new_val=v*2;
@@ -150,26 +179,32 @@ async function stabilize(){
   let total=0;
   while(true){
     let moved=apply_gravity();
+    if(moved){ draw_board(); await new Promise(r=>setTimeout(r,80)); }
     let gained=await resolve_cross(); total+=gained;
+    if(gained>0||moved){ draw_board(); await new Promise(r=>setTimeout(r,80)); }
     if(!(moved||gained>0)) break;
   }
   return total;
 }
-function is_game_over(){ for(let x=0;x<WIDTH;x++) if(grid[0][x]!==0) return true; return false; }
+  function is_game_over(){
+  for(let x=0;x<WIDTH;x++) if(grid[0][x]!==0) return true;
+  return false;
+}
 
-// ターン処理
+// 1ターン処理
 async function doDropTurn(){
   inputLocked=true;
-  let y=0; while(y+1<HEIGHT && grid[y+1][cursor_x]===0) y++;
-  grid[y][cursor_x]=next_value;
-  let gained=await stabilize(); score+=gained;
+  await animate_fall(cursor_x,next_value);
+  let gained=await stabilize();
+  score+=gained;
   next_value=new_piece();
   if(is_game_over()) game_over=true;
   draw_board();
   inputLocked=false;
 }
 
-  function initGame(){
+// 初期化
+function initGame(){
   for(let y=0;y<HEIGHT;y++)for(let x=0;x<WIDTH;x++) grid[y][x]=0;
   cursor_x=Math.floor(WIDTH/2);
   next_value=new_piece();
