@@ -115,7 +115,7 @@ async function animate_fall(col,value){
   while(y+1<HEIGHT && grid[y+1][col]===0){
     draw_board();
     draw_block(PREVIEW_Y+y*CELL_H,col*CELL_W,value,true,true);
-    await new Promise(r=>setTimeout(r,80));
+    await new Promise(r=>setTimeout(r,10));
     y++;
   }
   grid[y][col]=value;
