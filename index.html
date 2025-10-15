@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Drop2048X Mobile</title>
+<style>
+  html, body { margin:0; padding:0; background:#111; color:#ddd; height:100%; }
+  #wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; }
+  canvas { background:#000; touch-action:none; }
+  #controls {
+    display:flex; justify-content:center; gap:1em; margin:10px;
+  }
+  button {
+    font-size:2em; padding:0.5em 1em; border:none; border-radius:8px;
+    background:#333; color:#fff;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game"></canvas>
+  <div id="controls">
+    <button id="left">←</button>
+    <button id="drop">↓</button>
+    <button id="right">→</button>
+  </div>
+</div>
+<script>
+// ===== Config =====
+const WIDTH=6, HEIGHT=5;
+const GARBAGE=-1;
+const VALUE_LIST=[2,4,8,16,32,64,128,256,512,1024,2048,4096];
+const VALUE_COLORS=["#00FFFF","#0000FF","#00AA00","#FFFF00","#FF00FF","#FF0000",
+                    "#00FFFF","#0000FF","#00AA00","#FFFF00","#FF00FF","#FF0000"];
+
+let grid=Array.from({length:HEIGHT},()=>Array(WIDTH).fill(0));
+let cursor_x=Math.floor(WIDTH/2);
+let next_value=2;
+let score=0;
+let game_over=false;
+let inputLocked=false;
+
+// Canvas
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+let CELL_W, CELL_H, PREVIEW_Y, BOARD_Y;
+
+// レイアウト調整
+function resizeCanvas(){
+  const w=Math.min(window.innerWidth,600);
+  const h=Math.min(window.innerHeight-120,600);
+  canvas.width=w; canvas.height=h;
+  CELL_W=w/WIDTH;
+  CELL_H=(h*0.8)/HEIGHT;
+  PREVIEW_Y=40;
+  BOARD_Y=PREVIEW_Y+CELL_H;
+  draw_board();
+}
+window.addEventListener("resize",resizeCanvas);
+
+// RNG
+function randInt(max){ return Math.floor(Math.random()*max); }
+function new_piece(){
+  if(randInt(4)===0) return GARBAGE;
+  let max_val=0;
+  for(let y=0;y<HEIGHT;y++)for(let x=0;x<WIDTH;x++) if(grid[y][x]>max_val) max_val=grid[y][x];
+  const candidates=[],weights=[];
+  for(let i=0;i<VALUE_LIST.length;i++){
+    const val=VALUE_LIST[i];
+    if(max_val>0 && val>=max_val) break;
+    candidates.push(val); weights.push(Math.floor(100/val));
+  }
+  if(candidates.length===0) return 2;
+  let total=weights.reduce((a,b)=>a+b,0), r=randInt(total);
+  for(let i=0;i<candidates.length;i++){ if(r<weights[i]) return candidates[i]; r-=weights[i]; }
+  return 2;
+}
+function colorForValue(v){
+  if(v>0){ let idx=VALUE_LIST.indexOf(v); return idx>=0?VALUE_COLORS[idx]:"#FFF"; }
+  return "#666";
+}
+
+// 描画
+function draw_block(top,left,value,highlight=false,bold=false){
+  ctx.save();
+  ctx.strokeStyle=highlight?"#FFFF88":"#888";
+  ctx.lineWidth=highlight?3:1;
+  ctx.strokeRect(left,top,CELL_W,CELL_H);
+  if(value!==0){
+    ctx.fillStyle=(value===GARBAGE)?"#444":colorForValue(value);
+    ctx.fillRect(left+2,top+2,CELL_W-4,CELL_H-4);
+    ctx.fillStyle="#000"; ctx.textAlign="center"; ctx.textBaseline="middle";
+    ctx.font=(bold?"bold ":"")+`${CELL_H/3}px sans-serif`;
+    ctx.fillText(value===GARBAGE?"X":value,left+CELL_W/2,top+CELL_H/2);
+  }
+  ctx.restore();
+}
+function draw_preview(){
+  ctx.fillStyle="#FFF"; ctx.textAlign="left"; ctx.textBaseline="top"; ctx.font="14px sans-serif";
+  ctx.fillText(`Next:${next_value} Score:${score}`,10,10);
+  ctx.fillText("v",cursor_x*CELL_W+CELL_W/2,PREVIEW_Y-20);
+  draw_block(PREVIEW_Y,cursor_x*CELL_W,next_value,true,true);
+}
+function draw_board(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  draw_preview();
+  for(let y=0;y<HEIGHT;y++)for(let x=0;x<WIDTH;x++)
+    draw_block(BOARD_Y+y*CELL_H,x*CELL_W,grid[y][x],x===cursor_x,false);
+  if(game_over){ ctx.fillStyle="#FFF"; ctx.fillText("Game Over - qでリセット",10,BOARD_Y+HEIGHT*CELL_H+20); }
+}
+
+// 重力・マージ（簡略化: 前回の完全移植と同じロジックを使用）
+function apply_gravity(){
+  let moved=false;
+  for(let x=0;x<WIDTH;x++){
+    let write_y=HEIGHT-1;
+    for(let y=HEIGHT-1;y>=0;y--){
+      if(grid[y][x]!==0){
+        if(y!==write_y){ grid[write_y][x]=grid[y][x]; grid[y][x]=0; moved=true; }
+        write_y--;
+      }
+    }
+  }
+  return moved;
+}
+function neighbors_list(y,x){ return [{y:y-1,x},{y:y+1,x},{y,x:x-1},{y,x:x+1}]; }
+function find_cross_merges(){
+  const merges=[];
+  for(let y=0;y<HEIGHT;y++)for(let x=0;x<WIDTH;x++){
+    const v=grid[y][x]; if(v===0||v===GARBAGE) continue;
+    const same=neighbors_list(y,x).filter(p=>p.y>=0&&p.y<HEIGHT&&p.x>=0&&p.x<WIDTH&&grid[p.y][p.x]===v);
+    if(same.length>=2) merges.push({cy:y,cx:x,value:v,neigh:same});
+  }
+  return merges;
+}
+async function resolve_cross(){
+  const merges=find_cross_merges(); if(merges.length===0) return 0;
+  let gained=0;
+  for(const m of merges){
+    const v=m.value, neighs=m.neigh.length, new_val=v*2;
+    let mult=1.0; if(neighs===3) mult=1.5; else if(neighs===4) mult=2.0;
+    gained+=Math.floor(new_val*mult);
+    grid[m.cy][m.cx]=new_val;
+    for(const n of m.neigh) grid[n.y][n.x]=0;
+  }
+  for(let y=0;y<HEIGHT;y++)for(let x=0;x<WIDTH;x++) if(grid[y][x]===GARBAGE) grid[y][x]=0;
+  return gained;
+}
+async function stabilize(){
+  let total=0;
+  while(true){
+    let moved=apply_gravity();
+    let gained=await resolve_cross(); total+=gained;
+    if(!(moved||gained>0)) break;
+  }
+  return total;
+}
+function is_game_over(){ for(let x=0;x<WIDTH;x++) if(grid[0][x]!==0) return true; return false; }
+
+// ターン処理
+async function doDropTurn(){
+  inputLocked=true;
+  let y=0; while(y+1<HEIGHT && grid[y+1][cursor_x]===0) y++;
+  grid[y][cursor_x]=next_value;
+  let gained=await stabilize(); score+=gained;
+  next_value=new_piece();
+  if(is_game_over()) game_over=true;
+  draw_board();
+  inputLocked=false;
+}
+
+  function initGame(){
+  for(let y=0;y<HEIGHT;y++)for(let x=0;x<WIDTH;x++) grid[y][x]=0;
+  cursor_x=Math.floor(WIDTH/2);
+  next_value=new_piece();
+  score=0;
+  game_over=false;
+  inputLocked=false;
+  draw_board();
+}
+
+// 入力（キーボード）
+document.addEventListener("keydown",async e=>{
+  if(e.key==='q'||e.key==='Q'){ initGame(); return; }
+  if(game_over){ draw_board(); return; }
+  if(inputLocked) return;
+
+  if(e.key==="ArrowLeft" && cursor_x>0) cursor_x--;
+  else if(e.key==="ArrowRight" && cursor_x<WIDTH-1) cursor_x++;
+  else if(e.key==="ArrowDown"||e.key===" "){
+    if(grid[0][cursor_x]===0){ await doDropTurn(); }
+    else{ game_over=true; draw_board(); }
+  }
+  draw_board();
+});
+
+// 入力（ボタン）
+document.getElementById("left").addEventListener("click",()=>{
+  if(cursor_x>0){ cursor_x--; draw_board(); }
+});
+document.getElementById("right").addEventListener("click",()=>{
+  if(cursor_x<WIDTH-1){ cursor_x++; draw_board(); }
+});
+document.getElementById("drop").addEventListener("click",async()=>{
+  if(!inputLocked && !game_over){
+    if(grid[0][cursor_x]===0){ await doDropTurn(); }
+    else{ game_over=true; draw_board(); }
+  }
+});
+
+// 入力（タップ領域）
+canvas.addEventListener("click",async e=>{
+  if(game_over) return;
+  if(inputLocked) return;
+  const rect=canvas.getBoundingClientRect();
+  const x=e.clientX-rect.left, y=e.clientY-rect.top;
+  if(y>canvas.height*0.7){ // 下部タップで落下
+    if(grid[0][cursor_x]===0){ await doDropTurn(); }
+    else{ game_over=true; draw_board(); }
+  }else if(x<canvas.width/2){ // 左半分
+    if(cursor_x>0) cursor_x--;
+  }else{ // 右半分
+    if(cursor_x<WIDTH-1) cursor_x++;
+  }
+  draw_board();
+});
+
+// 起動
+resizeCanvas();
+initGame();
+</script>
+</body>
+</html>
